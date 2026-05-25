@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Şarj İstasyonu Bulucu</title>
+    <!-- Tailwind CSS (Modern Tasarım) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome (İkonlar) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Leaflet.js (Harita Altyapısı) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        #map {
+            height: 300px;
+            width: 100%;
+            border-radius: 1rem;
+            z-index: 1;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen flex flex-col justify-between">
+
+    <!-- Header -->
+    <header class="bg-teal-600 text-white py-4 px-6 text-center shadow-md">
+        <h1 class="text-xl font-bold flex items-center justify-center gap-2">
+            <i class="fa-solid fa-charging-station text-2xl"></i> Şarj Noktası Bulucu
+        </h1>
+        <p class="text-xs text-teal-100 mt-1">Konumunuza en yakın şarj istasyonları</p>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow p-4 max-w-md mx-auto w-full space-y-4">
+
+        <!-- Kontrol Paneli -->
+        <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+                <label for="radius-select" class="text-sm font-medium text-gray-600">Arama Çapı:</label>
+                <select id="radius-select" class="bg-gray-50 border border-gray-300 rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500">
+                    <option value="2000">2 Kilometre</option>
+                    <option value="5000" selected>5 Kilometre</option>
+                    <option value="10000">10 Kilometre</option>
+                    <option value="20000">20 Kilometre</option>
+                </select>
+            </div>
+            
+            <button id="btn-search" class="w-full bg-teal-600 hover:bg-teal-700 text-white py-3 px-4 rounded-xl font-semibold flex items-center justify-center gap-2 transition duration-200 shadow-sm">
+                <i class="fa-solid fa-location-crosshairs"></i> İstasyonları Ara
+            </button>
+        </div>
+
+        <!-- Durum ve Harita Paneli -->
+        <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 space-y-3">
+            <div id="status-text" class="text-sm text-center text-gray-500">
+                Haritayı yüklemek ve yakındaki istasyonları aramak için yukarıdaki butona basın.
+            </div>
+            <div id="map-container" class="hidden">
+                <div id="map"></div>
+            </div>
+        </div>
+
+        <!-- İstasyon Listesi -->
+        <div class="space-y-3">
+            <h2 class="text-lg font-bold text-gray-700 flex items-center gap-2 px-1">
+                <i class="fa-solid fa-list text-teal-600"></i> Yakındaki İstasyonlar (<span id="count">0</span>)
+            </h2>
+            <div id="station-list" class="space-y-3">
+                <!-- Dinamik olarak istasyon kartları buraya gelecek -->
+                <div class="text-center text-sm text-gray-400 py-6">Henüz arama yapılmadı.</div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Resmi EPDK Linkleri -->
+    <section class="p-4 max-w-md mx-auto w-full">
+        <div class="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-xs text-blue-800 space-y-2">
+            <p class="font-bold flex items-center gap-1"><i class="fa-solid fa-circle-info"></i> Bilgilendirme</p>
+            <p>EPDK'nın resmi şarj istasyon sorgulama ekranına veya mobil uygulamasına doğrudan ulaşmak için aşağıdaki resmi kanalları da kullanabilirsiniz:</p>
+            <div class="grid grid-cols-2 gap-2 pt-1">
+                <a href="https://lisans.epdk.gov.tr/epvys-web/faces/pages/lisans/elektrikSarjAgiIsletmeci/sarjIstasyonuOzetSorgula.xhtml" target="_blank" class="bg-blue-600 text-white text-center py-1.5 px-2 rounded-lg font-semibold hover:bg-blue-700 transition">EPDK Web Sorgu</a>
+                <a href="https://play.google.com/store/apps/details?id=tr.gov.epdk.sarjetTR" target="_blank" class="bg-teal-700 text-white text-center py-1.5 px-2 rounded-lg font-semibold hover:bg-teal-800 transition">Şarj@TR (Play Store)</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="py-4 text-center text-xs text-gray-400">
+        Veriler OpenStreetMap altyapısından anlık çekilmektedir.
+    </footer>
+
+    <script>
+        let map;
+        let userMarker;
+        let stationMarkersGroup;
+
+        const btnSearch = document.getElementById('btn-search');
+        const radiusSelect = document.getElementById('radius-select');
+        const statusText = document.getElementById('status-text');
+        const mapContainer = document.getElementById('map-container');
+        const stationList = document.getElementById('station-list');
+        const countSpan = document.getElementById('count');
+
+        // İki koordinat arasındaki mesafeyi hesaplayan fonksiyon (Haversine)
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Dünya yarıçapı (km)
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = 
+                Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; // Mesafe (km)
+        }
+
+        btnSearch.addEventListener('click', () => {
+            if (!navigator.geolocation) {
+                alert("Cihazınızda konum özelliği desteklenmiyor.");
+                return;
+            }
+
+            statusText.textContent = "Konumunuz alınıyor...";
+            btnSearch.disabled = true;
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const userLat = position.coords.latitude;
+                    const userLng = position.coords.longitude;
+                    const radius = radiusSelect.value;
+
+                    initMap(userLat, userLng);
+                    fetchStations(userLat, userLng, radius);
+                },
+                (error) => {
+                    btnSearch.disabled = false;
+                    statusText.textContent = "Konum izni reddedildi veya konum alınamadı.";
+                    alert("Lütfen cihazınızdan konum izni verdiğinizden emin olun.");
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        });
+
+        // Haritayı başlatan fonksiyon
+        function initMap(lat, lng) {
+            mapContainer.classList.remove('hidden');
+            
+            if (!map) {
+                map = L.map('map').setView([lat, lng], 14);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap'
+                }).addTo(map);
+                stationMarkersGroup = L.layerGroup().addTo(map);
+            } else {
+                map.setView([lat, lng], 14);
+                stationMarkersGroup.clearLayers();
+            }
+
+            // Kullanıcının konumunu haritada mavi nokta yapalım
+            if (userMarker) {
+                userMarker.setLatLng([lat, lng]);
+            } else {
+                const blueIcon = L.icon({
+                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                });
+                userMarker = L.marker([lat, lng], { icon: blueIcon }).addTo(map).bindPopup("Sizin Konumunuz").openPopup();
+            }
+        }
+
+        // OpenStreetMap Overpass API'den şarj istasyonu verilerini çeken fonksiyon
+        async function fetchStations(lat, lng, radius) {
+            statusText.textContent = "Yakındaki şarj istasyonları taranıyor...";
+            
+            // Overpass QL Sorgusu (Çevredeki tüm şarj istasyonlarını çeker)
+            const query = `[out:json];(node["amenity"="charging_station"](around:${radius},${lat},${lng});way["amenity"="charging_station"](around:${radius},${lat},${lng}););out center;`;
+            const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error("Ağ hatası oluştu.");
+                
+                const data = await response.json();
+                processStations(data.elements, lat, lng);
+            } catch (error) {
+                console.error(error);
+                statusText.textContent = "İstasyon verileri alınırken bir hata oluştu. Lütfen tekrar deneyin.";
+                btnSearch.disabled = false;
+            }
+        }
+
+        // İstasyon verilerini işleyip ekrana basan fonksiyon
+        function processStations(elements, userLat, userLng) {
+            btnSearch.disabled = false;
+            stationList.innerHTML = '';
+            
+            if (!elements || elements.length === 0) {
+                statusText.textContent = "Seçilen mesafede hiç şarj istasyonu bulunamadı.";
+                countSpan.textContent = "0";
+                stationList.innerHTML = `<div class="text-center text-sm text-gray-400 py-6">Maalesef yakınınızda istasyon bulunamadı. Aralığı artırmayı deneyin.</div>`;
+                return;
+            }
+
+            statusText.textContent = `Arama tamamlandı. ${elements.length} istasyon listeleniyor.`;
+            countSpan.textContent = elements.length;
+
+            // Yeşil şarj istasyonu ikonu tanımlayalım
+            const greenIcon = L.icon({
+                iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+                shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+                iconSize: [25, 41],
+                iconAnchor: [12, 41],
+                popupAnchor: [1, -34],
+                shadowSize: [41, 41]
+            });
+
+            // İstasyonları kullanıcıya olan mesafelerine göre sıralayalım
+            const stations = elements.map(el => {
+                const stLat = el.lat || (el.center ? el.center.lat : null);
+                const stLng = el.lon || (el.center ? el.center.lon : null);
+                
+                if (!stLat || !stLng) return null;
+
+                const distance = calculateDistance(userLat, userLng, stLat, stLng);
+                
+                // İstasyon bilgilerini düzenle
+                const brand = el.tags.brand || el.tags.operator || el.tags.name || "Bilinmeyen Operatör";
+                const capacity = el.tags.capacity ? el.tags.capacity + " Soket" : "Soket bilgisi yok";
+                const socketType = el.tags['socket:type2'] || el.tags['socket:ccs'] || "";
+                
+                return {
+                    id: el.id,
+                    lat: stLat,
+                    lng: stLng,
+                    brand,
+                    capacity,
+                    socketType,
+                    distance
+                };
+            }).filter(item => item !== null);
+
+            // Yakından uzağa sırala
+            stations.sort((a, b) => a.distance - b.distance);
+
+            // Haritaya ve listeye ekle
+            stations.forEach(station => {
+                // Harita Markeri
+                const marker = L.marker([station.lat, station.lng], { icon: greenIcon })
+                    .bindPopup(`<b>${station.brand}</b><br>${station.capacity}`)
+                    .addTo(stationMarkersGroup);
+
+                // Liste Elemanı (HTML Kartı)
+                const card = document.createElement('div');
+                card.className = "bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center justify-between gap-4";
+                card.innerHTML = `
+                    <div class="flex-grow space-y-1">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 bg-green-500 rounded-full"></span>
+                            <h3 class="font-bold text-gray-800 text-sm">${station.brand}</h3>
+                        </div>
+                        <p class="text-xs text-gray-500 flex items-center gap-1">
+                            <i class="fa-solid fa-plug text-teal-600"></i> ${station.capacity} ${station.socketType ? `(${station.socketType})` : ''}
+                        </p>
+                        <p class="text-xs font-semibold text-teal-700">
+                            <i class="fa-solid fa-route"></i> Yaklaşık ${station.distance.toFixed(2)} km uzaklıkta
+                        </p>
+                    </div>
+                    <button onclick="window.open('https://www.google.com/maps/search/?api=1&query=${station.lat},${station.lng}', '_blank')" 
+                            class="bg-teal-50 hover:bg-teal-100 text-teal-700 p-3 rounded-xl transition duration-200">
+                        <i class="fa-solid fa-diamond-turn-right text-lg"></i>
+                    </button>
+                `;
+                stationList.appendChild(card);
+            });
+        }
+    </script>
+</body>
+</html>
